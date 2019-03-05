@@ -8,6 +8,20 @@ use pnet::datalink::{Channel, NetworkInterface};
 use pnet::packet::ethernet::EthernetPacket;
 use pnet::packet::Packet;
 
+struct Options<'s> {
+    macignore: Option<&'s str>,
+    ipignore: Option<&'s str>
+}
+
+impl<'s> Options<'s> {
+    fn new(macignore: Option<&'s str>, ipignore: Option<&'s str>) -> Self {
+        Options {
+            macignore,
+            ipignore
+        }
+    }
+}
+
 fn main() {
 	let matches = App::new("metasniff")
 		.version(clap::crate_version!())
@@ -19,6 +33,18 @@ fn main() {
 				.required(true)
 				.index(1),
 		)
+        .arg(
+            Arg::with_name("macignore")
+                .long("mac-ignore")
+                .value_name("MAC_ADDRESS")
+                .takes_value(true)
+        )
+        .arg(
+            Arg::with_name("ipignore")
+                .long("ip-ignore")
+                .value_name("IP_ADDRESS")
+                .takes_value(true)
+        )
 		.get_matches();
 
 	let iface_name = matches.value_of("INTERFACE").unwrap();
@@ -31,6 +57,16 @@ fn main() {
 		panic!("The interface provided is invalid");
 	};
 
+    let options = Options::new(matches.value_of("macignore"), matches.value_of("ipignore"));
+
+    if let Some(val) = options.macignore {
+        println!("Ignoring packets with source/dest MAC '{}'", val);
+    }
+
+    if let Some(val) = options.ipignore {
+        println!("Ignoring packets with source/dest IP '{}'", val);
+    }
+
 	let mut rx = match datalink::channel(&iface, Default::default()) {
 		Ok(Channel::Ethernet(_, rx)) => rx,
 		Ok(_) => panic!("Unhandled channel type!"),
@@ -40,26 +76,42 @@ fn main() {
 	println!("Listening for traffic on {}...", iface_name);
 	loop {
 		match rx.next() {
-			Ok(buffer) => process_raw(buffer),
+			Ok(buffer) => process_raw(buffer, &options),
 			Err(_) => println!("Packet dropped!"),
 		}
 	}
 }
 
-fn process_raw(buffer: &[u8]) {
+fn process_raw(buffer: &[u8], options: &Options) {
 	match EthernetPacket::new(buffer) {
-		Some(pack) => process_ethframe(pack),
+		Some(pack) => process_ethframe(pack, options),
 		None => println!("Couldn't parse raw receive!"),
 	}
 }
 
-fn process_ethframe(ethpack: EthernetPacket) {
+fn process_ethframe(ethpack: EthernetPacket, options: &Options) {
+    if let Some(val) = options.macignore {
+        if ethpack.get_destination().to_string() == val.to_string() || ethpack.get_source().to_string() == val.to_string() {
+            return;
+        }
+    }
+
 	match Layer3::new(ethpack.payload()) {
-		Some(l3) => process_layer3(l3),
+		Some(l3) => process_layer3(l3, options),
 		None => println!("Couldn't process eth frame"),
 	}
 }
 
-fn process_layer3(l3: Layer3) {
-	println!("{}\t=>\t{}", l3.source(), l3.destination());
+fn process_layer3(l3: Layer3, options: &Options) {
+    let source = l3.source();
+    let destination = l3.destination();
+
+    if let Some(val) = options.ipignore {
+        let val = val.to_string();
+        if source == val || destination == val {
+            return;
+        }
+    }
+
+    println!("{}\t->\t{}", source, destination);
 }
