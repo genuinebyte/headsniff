@@ -1,6 +1,6 @@
-# Metasniff
-No relation to metasploit.
+# Headsniff
+Headsniff is a program designed to sniff the data from the header of packets that
+travel through a network interface. Currently you can only output the source and
+destination IP addresses but support MAC is soon to come.
 
-Metasniff is a program designed to sniff the metadata of packts that travel
-through a network interface. Currently you can only output the source and
-destination IP addresses but support for MAC addresses is in progress.
+I hope to allow a vast amount of customization on what to output.
