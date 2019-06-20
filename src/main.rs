@@ -8,8 +8,12 @@ use pnet::datalink::{Channel, NetworkInterface};
 use pnet::packet::ethernet::EthernetPacket;
 use pnet::packet::Packet;
 use pnet::util::MacAddr;
-
+use std::cell::RefCell;
+use std::fs::File;
+use std::io::Write;
 use std::net::IpAddr;
+
+use std::ops::DerefMut;
 use std::str::FromStr;
 struct Options {
     mac_addrs: Vec<MacAddr>,
@@ -18,6 +22,7 @@ struct Options {
     ip_addrs: Vec<IpAddr>,
     ip_blacklisting: bool,
     ip_whitelisting: bool,
+    debug: Option<RefCell<File>>,
 }
 
 impl Options {
@@ -26,6 +31,7 @@ impl Options {
         maclisten: Option<&str>,
         ipignore: Option<&str>,
         iplisten: Option<&str>,
+        debug: bool,
     ) -> Self {
         let mac_addrs: Vec<MacAddr> = if let Some(val) = macignore {
             Self::split_and_collect(val, ',', |x| MacAddr::from_str(x).unwrap())
@@ -43,6 +49,14 @@ impl Options {
             Vec::new()
         };
 
+        let debug_cell: Option<RefCell<File>> = if debug {
+            Some(RefCell::new(
+                File::create("debug.packets").expect("Failed to create debug file!"),
+            ))
+        } else {
+            None
+        };
+
         Options {
             mac_addrs,
             mac_blacklisting: macignore.is_some(),
@@ -50,6 +64,7 @@ impl Options {
             ip_addrs,
             ip_blacklisting: ipignore.is_some(),
             ip_whitelisting: iplisten.is_some(),
+            debug: debug_cell,
         }
     }
 
@@ -65,6 +80,22 @@ impl Options {
     /// Checks to see if the provided IP is one we should be monitoring
     pub fn ip_match(&self, ip: &IpAddr) -> bool {
         self.ip_addrs.contains(ip)
+    }
+
+    /// Write a buffer to the debug file
+    pub fn debug(&self, buf: &[u8]) {
+        if self.debug.is_none() {
+            return;
+        }
+
+        let cell = self.debug.as_ref().unwrap();
+        let mut file = cell.borrow_mut();
+        file.deref_mut()
+            .write_all(buf)
+            .expect("Failed to write to file!");
+        file.deref_mut()
+            .write(b"@@@")
+            .expect("Failed to write to file!");
     }
 }
 
@@ -107,6 +138,10 @@ fn main() {
                 .takes_value(true)
                 .conflicts_with("ipblacklist")
         )
+        .arg(
+            Arg::with_name("debug")
+                .short("D")
+        )
 		.get_matches();
 
     let iface_name = matches.value_of("INTERFACE").unwrap();
@@ -124,6 +159,7 @@ fn main() {
         matches.value_of("macwhitelist"),
         matches.value_of("ipblacklist"),
         matches.value_of("ipwhitelist"),
+        matches.is_present("debug"),
     );
 
     let mut rx = match datalink::channel(&iface, Default::default()) {
@@ -142,6 +178,8 @@ fn main() {
 }
 
 fn process_raw(buffer: &[u8], options: &Options) {
+    options.debug(buffer);
+
     match EthernetPacket::new(buffer) {
         Some(pack) => process_ethframe(pack, options),
         None => println!("Couldn't parse raw receive!"),
