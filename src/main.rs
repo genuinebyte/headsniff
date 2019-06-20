@@ -71,7 +71,7 @@ impl Options {
 fn main() {
     //rustfmt is consitently removing the Arg::with_name from macignore, thus:
     #[rustfmt::skip]
-	let matches = App::new("metasniff")
+	let matches = App::new("headsniff")
 		.version(clap::crate_version!())
 		.author(clap::crate_authors!(", "))
 		.about(clap::crate_description!())
