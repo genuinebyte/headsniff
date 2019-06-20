@@ -7,27 +7,64 @@ use pnet::datalink;
 use pnet::datalink::{Channel, NetworkInterface};
 use pnet::packet::ethernet::EthernetPacket;
 use pnet::packet::Packet;
+use pnet::util::MacAddr;
 
-struct Options<'s> {
-    macignore: Option<&'s str>,
-    maclisten: Option<&'s str>,
-    ipignore: Option<&'s str>,
-    iplisten: Option<&'s str>,
+use std::net::IpAddr;
+use std::str::FromStr;
+struct Options {
+    mac_addrs: Vec<MacAddr>,
+    mac_blacklisting: bool,
+    mac_whitelisting: bool,
+    ip_addrs: Vec<IpAddr>,
+    ip_blacklisting: bool,
+    ip_whitelisting: bool,
 }
 
-impl<'s> Options<'s> {
-    fn new(
-        macignore: Option<&'s str>,
-        maclisten: Option<&'s str>,
-        ipignore: Option<&'s str>,
-        iplisten: Option<&'s str>,
+impl Options {
+    pub fn new(
+        macignore: Option<&str>,
+        maclisten: Option<&str>,
+        ipignore: Option<&str>,
+        iplisten: Option<&str>,
     ) -> Self {
+        let mac_addrs: Vec<MacAddr> = if let Some(val) = macignore {
+            Self::split_and_collect(val, ',', |x| MacAddr::from_str(x).unwrap())
+        } else if let Some(val) = maclisten {
+            Self::split_and_collect(val, ',', |x| MacAddr::from_str(x).unwrap())
+        } else {
+            Vec::new()
+        };
+
+        let ip_addrs = if let Some(val) = ipignore {
+            Self::split_and_collect(val, ',', |x| IpAddr::from_str(x).unwrap())
+        } else if let Some(val) = iplisten {
+            Self::split_and_collect(val, ',', |x| IpAddr::from_str(x).unwrap())
+        } else {
+            Vec::new()
+        };
+
         Options {
-            macignore,
-            maclisten,
-            ipignore,
-            iplisten,
+            mac_addrs,
+            mac_blacklisting: macignore.is_some(),
+            mac_whitelisting: maclisten.is_some(),
+            ip_addrs,
+            ip_blacklisting: ipignore.is_some(),
+            ip_whitelisting: iplisten.is_some(),
         }
+    }
+
+    fn split_and_collect<T, F: FnMut(&str) -> T>(string: &str, delim: char, func: F) -> Vec<T> {
+        string.split(delim).map(func).collect()
+    }
+
+    /// Checks to see if the provided MAC is one we should be monitoring
+    pub fn mac_match(&self, mac: &MacAddr) -> bool {
+        self.mac_addrs.contains(mac)
+    }
+
+    /// Checks to see if the provided IP is one we should be monitoring
+    pub fn ip_match(&self, ip: &IpAddr) -> bool {
+        self.ip_addrs.contains(ip)
     }
 }
 
@@ -45,30 +82,30 @@ fn main() {
 				.index(1)
 		)
         .arg(
-            Arg::with_name("macignore")
-                .long("mac-ignore")
-                .value_name("MAC_ADDRESS")
+            Arg::with_name("macblacklist")
+                .long("mac-blacklist")
+                .value_name("MAC_BLACKLIST")
                 .takes_value(true)
         )
         .arg (
-            Arg::with_name("maclisten")
-                .long("mac-listen")
-                .value_name("MAC_LISTEN")
+            Arg::with_name("macwhitelist")
+                .long("mac-whitelist")
+                .value_name("MAC_WHITELIST")
                 .takes_value(true)
-                .conflicts_with("macignore")
+                .conflicts_with("macblacklist")
         )
         .arg(
-            Arg::with_name("ipignore")
-                .long("ip-ignore")
-                .value_name("IP_ADDRESS")
+            Arg::with_name("ipblacklist")
+                .long("ip-blacklist")
+                .value_name("IP_BLACKLIST")
                 .takes_value(true)
         )
         .arg(
-            Arg::with_name("iplisten")
-                .long("ip-listen")
-                .value_name("IP_LISTEN")
+            Arg::with_name("ipwhitelist")
+                .long("ip-whitelist")
+                .value_name("IP_WHITELIST")
                 .takes_value(true)
-                .conflicts_with("ipignore")
+                .conflicts_with("ipblacklist")
         )
 		.get_matches();
 
@@ -83,23 +120,11 @@ fn main() {
     };
 
     let options = Options::new(
-        matches.value_of("macignore"),
-        matches.value_of("maclisten"),
-        matches.value_of("ipignore"),
-        matches.value_of("iplisten"),
+        matches.value_of("macblacklist"),
+        matches.value_of("macwhitelist"),
+        matches.value_of("ipblacklist"),
+        matches.value_of("ipwhitelist"),
     );
-
-    if let Some(val) = options.macignore {
-        println!("Ignoring packets with source/dest MAC '{}'", val);
-    } else if let Some(val) = options.maclisten {
-        println!("Listening for packets with source/dest MAC '{}'", val);
-    }
-
-    if let Some(val) = options.ipignore {
-        println!("Ignoring packets with source/dest IP '{}'", val);
-    } else if let Some(val) = options.iplisten {
-        println!("Listening for packets with source/dest IP '{}'", val);
-    }
 
     let mut rx = match datalink::channel(&iface, Default::default()) {
         Ok(Channel::Ethernet(_, rx)) => rx,
@@ -124,18 +149,14 @@ fn process_raw(buffer: &[u8], options: &Options) {
 }
 
 fn process_ethframe(ethpack: EthernetPacket, options: &Options) {
-    if let Some(val) = options.macignore {
-        if ethpack.get_destination().to_string() == val.to_string()
-            || ethpack.get_source().to_string() == val.to_string()
-        {
-            return;
-        }
-    } else if let Some(val) = options.maclisten {
-        if ethpack.get_destination().to_string() != val.to_string()
-            && ethpack.get_source().to_string() != val.to_string()
-        {
-            return;
-        }
+    let destination = ethpack.get_destination();
+    let source = ethpack.get_source();
+    let mac_match = options.mac_match(&destination) || options.mac_match(&source);
+
+    if mac_match && options.mac_blacklisting {
+        return;
+    } else if !mac_match && options.mac_whitelisting {
+        return;
     }
 
     match Layer3::new(ethpack.payload()) {
@@ -147,17 +168,12 @@ fn process_ethframe(ethpack: EthernetPacket, options: &Options) {
 fn process_layer3(l3: Layer3, options: &Options) {
     let source = l3.source();
     let destination = l3.destination();
+    let ip_match = options.ip_match(&source) || options.ip_match(&destination);
 
-    if let Some(val) = options.ipignore {
-        let val = val.to_string();
-        if source == val || destination == val {
-            return;
-        }
-    } else if let Some(val) = options.iplisten {
-        let val = val.to_string();
-        if source != val || destination != val {
-            return;
-        }
+    if ip_match && options.ip_blacklisting {
+        return;
+    } else if !ip_match && options.ip_whitelisting {
+        return;
     }
 
     println!("{}\t->\t{}", source, destination);
